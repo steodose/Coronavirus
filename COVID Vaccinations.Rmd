@@ -1,0 +1,167 @@
+---
+title: "COVID-19 Vaccinations"
+author: "Stephan Teodosescu"
+date: "8/15/2021"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data from Our World in Data
+
+This R Markdown document shows how to create interactive graphics using the Tidyverse and ggiraph package. It was inspired by Sharon Machlis' tutorial at [InfoWorld.com]<https://www.infoworld.com/article/3626911/easy-interactive-ggplot-graphs-in-r-with-ggiraph.html>.
+
+For data we are going to use US COVID vaccination data by state available from the Our World in Data GitHub repository. You'll need to load the following R packages as well:
+
+```{r}
+library(tidyverse)
+library(ggiraph)
+library(patchwork)
+
+data_url <- "https://github.com/owid/covid-19-data/raw/master/public/data/vaccinations/us_state_vaccinations.csv"
+
+all_data <- read_csv(data_url)
+all_data$location[all_data$location == "New York State"] <- "New York" #Recode New York State to New York
+```
+
+## Prepare Data
+
+First, we will create a custom ggplot theme which we'll use for as a template for all our figures. The themse was inspired by Owen Phillips' graphics at his Substack blog the F5. It is also meant to look similar to the Financial Times' data visualizations. 
+
+Then, we create a vector of entries that aren’t US states or DC to filter out that data in the eventual figures. 
+
+```{r, echo=TRUE}
+theme_custom <- function () { 
+    theme_minimal(base_size=11, base_family="Chivo") %+replace% 
+        theme(
+            panel.grid.minor = element_blank(),
+            plot.background = element_rect(fill = 'floralwhite', color = "floralwhite")
+        )
+}
+
+# Get latest date of update from the data to include in figures
+latest_date <- max(all_data$date) %>% 
+    format(format="%B %d")
+
+# Identify what is not a state and/or DC
+not_states_or_dc <- c("American Samoa", "Bureau of Prisons", 
+                      "Dept of Defense", "Federated States of Micronesia", "Guam", 
+                      "Indian Health Svc", "Long Term Care", "Marshall Islands", 
+                      "Northern Mariana Islands", "Puerto Rico", "Republic of Palau", 
+                      "United States", "Veterans Health", "Virgin Islands")
+```
+
+This next code chunk filters out the data that aren't states, selects only the most recent data, rounds the percent vaccinated to one decimal point, selects only the state and percent vaccinated columns, and renames the selected columns to "State" and "PctFullyVaccinated."
+
+```{r, echo = TRUE}
+bar_graph_data_recent <- all_data %>%  
+  filter(date == max(date), !(location %in% not_states_or_dc)) %>%  
+  mutate(
+   PctFullyVaccinated = round(people_fully_vaccinated_per_hundred, 1)  
+  ) %>%  
+  select(State = location, PctFullyVaccinated)
+```
+
+Then we create a static ggplot bar chart of the data using geom_col() and add a customary blue bars outlined in black and minimal theme, set the axis text size to 10 points, and flip the x and y coordinates so it’s easier to read the state names. 
+
+```{r, echo = TRUE}
+library(glue)
+library(ggtext)
+
+bar_graph <- ggplot(bar_graph_data_recent, 
+                    aes(x = reorder(State, PctFullyVaccinated), 
+                        y = PctFullyVaccinated)) +
+    geom_col(color = "black", fill = ifelse(bar_graph_data_recent$PctFullyVaccinated >= 50.0,
+                                            "#045CA4", "grey")) +
+    theme_custom() +
+    labs(
+        x = "", y = "Fully Vaccinated (%)",
+        title = "U.S. State Vaccination Status",
+        subtitle = glue("Vaccination rates by state, as of
+                        **{latest_date}**. Colors represent states \n with
+                        <span style = 'color:#045CA4;'>**greater than**</span> vs.
+                        <span style = 'color:#999999;'>**less than**</span> 50% of its residents fully vaccinated."),
+        caption = "Data: Our World in Data\nGraphic: @steodosescu"
+    ) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(plot.subtitle = element_markdown()) +
+    coord_flip()
+
+bar_graph
+```
+
+## Create Tooltip
+
+The ggiraph package only lets us use one column for the tooltip display, but we want both state and vaccination rates to show up when a user hovers over the bars. Thus, we are going to add a tooltip column to the data frame with both state and rate in one text string:
+
+```{r, echo = TRUE}
+bar_graph_data_recent <- bar_graph_data_recent %>%
+    mutate(
+        tooltip_text = paste0(toupper(State), "\n", 
+                              PctFullyVaccinated, "%")
+    )
+```
+
+## Add Interactivity with ggiraph
+
+To create a ggiraph interactive bar chart we just need to make a simple alteration to our existing char: change geom_col() to geom_col_interactive() and add the tooltip and data_id to the aes() mapping. Then we display the interactive graph object with the girafe() function. You can set the graph width and height with width_svg and height_svg arguments within girafe().
+
+```{r, echo = TRUE}
+latest_vax_graph <- ggplot(bar_graph_data_recent, 
+                           aes(x = reorder(State, PctFullyVaccinated), 
+                               y = PctFullyVaccinated,
+                               tooltip = tooltip_text, data_id = State #<<
+                           )) +
+    geom_col_interactive(color = "black", fill="#045CA4") +
+    theme_custom() +
+    labs(
+        x = "", y = "Fully Vaccinated (%)",
+        title = "U.S State Vaccination Status",
+        subtitle = glue("Hover to see individual state vaccination %s, as of **{latest_date}**"),
+        caption = "Data: Our World in Data\nGraphic: @steodosescu"
+    ) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(plot.subtitle = element_markdown()) +
+    coord_flip()
+
+girafe(ggobj = latest_vax_graph, width_svg = 10, height_svg = 10)
+
+```
+
+## Link Interactive Graphs
+
+The code to link the two graphs is extremely simple. Below I use the girafe() function to say I want to print the early_vax_graph plus the latest_vax_graph and set the canvas width and height. I also add an option so when the user hovers, the bars turn orange.
+
+```{r, echo = TRUE}
+
+bar_graph_data_early <- all_data %>%
+    filter(date == "2021-02-14", !(location %in% not_states_or_dc)) %>%
+    arrange(people_fully_vaccinated_per_hundred) %>%
+    mutate(
+        PctFullyVaccinated = round(people_fully_vaccinated_per_hundred, 1),
+        tooltip_text = paste0(toupper(location), "\n", PctFullyVaccinated, "%")
+    ) %>%
+    select(State = location, PctFullyVaccinated, tooltip_text)
+
+early_vax_graph <- ggplot(bar_graph_data_early, aes(x = reorder(State, PctFullyVaccinated), y = PctFullyVaccinated, tooltip = tooltip_text, data_id = State)) +
+    geom_col_interactive(color = "black", fill="#045CA4") +
+    theme_custom() +
+    labs(
+        x = "", y = "Fully Vaccinated (%)",
+        title = "Vax Status",
+        subtitle = glue("Data as of **Feb 14, 2021**"),
+        caption = "Data: Our World in Data\nGraphic: @steodosescu"
+    ) +
+    theme(plot.title = element_text(face = "bold")) +
+    theme(plot.subtitle = element_markdown()) +
+    coord_flip()
+
+
+girafe(code = print(early_vax_graph + latest_vax_graph), 
+       width_svg = 10, height_svg = 8) %>% 
+    girafe_options(opts_hover(css = "fill:orange;"))
+```
